@@ -1,0 +1,59 @@
+[project]
+name = "codescope"
+version = "0.1.0"
+description = "Codebase indexer & semantic search tool — local RAG pipeline for AI coding agents"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Ömer Savranoğulları", email = "omersavran13@gmail.com" },
+]
+requires-python = ">=3.12"
+keywords = ["codebase", "indexer", "semantic-search", "mcp", "rag", "embeddings"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "chromadb",
+    "tree-sitter",
+    "click",
+    "rich",
+    "mcp[cli]",
+    "tree-sitter-python>=0.25.0",
+    "tree-sitter-javascript>=0.25.0",
+    "tree-sitter-typescript>=0.23.2",
+    "tree-sitter-go>=0.25.0",
+    "tree-sitter-rust>=0.24.0",
+    "tree-sitter-java>=0.23.5",
+    "tree-sitter-c>=0.24.1",
+    "tree-sitter-cpp>=0.23.4",
+    "tree-sitter-c-sharp>=0.23.1",
+    "tree-sitter-ruby>=0.23.1",
+    "tree-sitter-html>=0.23.2",
+    "tree-sitter-css>=0.25.0",
+]
+
+[project.optional-dependencies]
+openai = ["openai"]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+codescope = "codescope.cli:main"
+codescope-mcp = "codescope.mcp_server:main"
+
+[project.entry-points."mcp.servers"]
+codescope = "codescope.mcp_server:main"
+
+[build-system]
+requires = ["uv_build>=0.10.2,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
