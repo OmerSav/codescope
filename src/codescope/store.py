@@ -42,13 +42,17 @@ class VectorStore:
         ids: list[str],
         documents: list[str],
         metadatas: list[dict[str, Any]],
+        *,
+        batch_size: int = 5000,
     ) -> None:
         """Upsert with ChromaDB handling embedding (local provider)."""
-        self._collection.upsert(
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-        )
+        for start in range(0, len(ids), batch_size):
+            end = start + batch_size
+            self._collection.upsert(
+                ids=ids[start:end],
+                documents=documents[start:end],
+                metadatas=metadatas[start:end],
+            )
 
     def query_text(self, text: str, n_results: int = 10) -> dict[str, Any]:
         """Query using text — ChromaDB embeds the query (local provider)."""
@@ -66,14 +70,18 @@ class VectorStore:
         embeddings: list[list[float]],
         documents: list[str],
         metadatas: list[dict[str, Any]],
+        *,
+        batch_size: int = 5000,
     ) -> None:
         """Upsert with pre-computed embeddings (OpenAI provider)."""
-        self._collection.upsert(
-            ids=ids,
-            embeddings=embeddings,
-            documents=documents,
-            metadatas=metadatas,
-        )
+        for start in range(0, len(ids), batch_size):
+            end = start + batch_size
+            self._collection.upsert(
+                ids=ids[start:end],
+                embeddings=embeddings[start:end],
+                documents=documents[start:end],
+                metadatas=metadatas[start:end],
+            )
 
     def query_embedding(self, embedding: list[float], n_results: int = 10) -> dict[str, Any]:
         """Query using a pre-computed embedding vector (OpenAI provider)."""

@@ -10,7 +10,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from . import __version__
-from .config import CodeScopeConfig
+from .config import DEFAULT_DB_DIR, DEFAULT_IGNORE_CONTENT, IGNORE_FILE_NAME, CodeScopeConfig
 
 console = Console()
 
@@ -294,9 +294,37 @@ def _ensure_codex_mcp_toml(file_path: Path) -> None:
         console.print(f"  [green]Created:[/] {file_path}")
 
 
-@main.group()
-def init() -> None:
-    """Initialize codescope for an AI coding agent."""
+def _ensure_codescopeignore(project: Path) -> None:
+    """Create .codescope/.codescopeignore with sensible defaults if missing."""
+    codescope_dir = project / DEFAULT_DB_DIR
+    codescope_dir.mkdir(parents=True, exist_ok=True)
+    ignore_file = codescope_dir / IGNORE_FILE_NAME
+    if ignore_file.exists():
+        console.print(f"  [dim]Already exists:[/] {ignore_file}")
+    else:
+        ignore_file.write_text(DEFAULT_IGNORE_CONTENT, encoding="utf-8")
+        console.print(f"  [green]Created:[/] {ignore_file}")
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def init(ctx: click.Context) -> None:
+    """Initialize codescope for a project.
+
+    Without a subcommand (claude/codex), creates the .codescope/ directory
+    with a default .codescopeignore file in the current directory.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    project = Path(".").resolve()
+    console.print(f"[bold]Initializing codescope[/] in {project}\n")
+    _ensure_codescopeignore(project)
+    console.print(
+        "\n[green]Done![/] Next steps:\n"
+        "  1. Edit [bold].codescope/.codescopeignore[/] to customise which files to skip\n"
+        "  2. Run [bold]codescope index .[/] to index the project\n"
+        "  3. Optionally run [bold]codescope init claude .[/] or [bold]codescope init codex .[/] to set up an AI agent"
+    )
 
 
 @init.command("claude")
@@ -312,11 +340,14 @@ def init_claude(path: Path, user: bool) -> None:
     project = path.resolve()
     console.print(f"[bold]Initializing codescope for Claude Code[/] in {project}\n")
 
-    # 1. Agent instructions
+    # 1. .codescopeignore
+    _ensure_codescopeignore(project)
+
+    # 2. Agent instructions
     claude_md = project / ".claude" / "CLAUDE.md"
     _ensure_instructions_file(claude_md)
 
-    # 2. MCP configuration
+    # 3. MCP configuration
     if user:
         mcp_file = Path.home() / ".claude.json"
         _ensure_mcp_json(mcp_file)
@@ -346,14 +377,17 @@ def init_codex(path: Path, user: bool) -> None:
     project = path.resolve()
     console.print(f"[bold]Initializing codescope for Codex[/] in {project}\n")
 
-    # 1. Agent instructions
+    # 1. .codescopeignore
+    _ensure_codescopeignore(project)
+
+    # 2. Agent instructions
     if user:
         agents_md = Path.home() / ".codex" / "AGENTS.md"
     else:
         agents_md = project / "AGENTS.md"
     _ensure_instructions_file(agents_md)
 
-    # 2. MCP configuration
+    # 3. MCP configuration
     if user:
         mcp_file = Path.home() / ".codex" / "config.toml"
         _ensure_codex_mcp_toml(mcp_file)

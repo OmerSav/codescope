@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
 
 from .chunker import Chunk, chunk_file
-from .config import CodeScopeConfig
+from .config import CodeScopeConfig, matches_ignore_patterns
 from .embeddings import embed_texts_openai, get_chromadb_embedding_function
 from .file_hashes import FileHashRegistry
 from .store import VectorStore
@@ -36,10 +36,18 @@ def collect_files(config: CodeScopeConfig) -> list[Path]:
     """Walk the project root and collect indexable files."""
     files: list[Path] = []
     for path in config.project_root.rglob("*"):
+        # Hardcoded directory blocklist (safety net)
         if any(part in config.ignore_dirs for part in path.parts):
             continue
-        if path.is_file() and path.suffix in config.extensions:
-            files.append(path)
+        if not path.is_file():
+            continue
+        if path.suffix not in config.extensions:
+            continue
+        # User-defined .codescopeignore patterns
+        rel = str(path.relative_to(config.project_root))
+        if matches_ignore_patterns(rel, config.ignore_patterns):
+            continue
+        files.append(path)
     return sorted(files)
 
 
