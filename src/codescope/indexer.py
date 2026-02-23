@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
 
 from .chunker import Chunk, chunk_file
-from .config import CodeScopeConfig, matches_ignore_patterns
+from .config import CodeScopeConfig, matches_ignore
 from .embeddings import embed_texts_openai, get_chromadb_embedding_function
 from .file_hashes import FileHashRegistry
 from .store import VectorStore
@@ -43,9 +43,9 @@ def collect_files(config: CodeScopeConfig) -> list[Path]:
             continue
         if path.suffix not in config.extensions:
             continue
-        # User-defined .codescopeignore patterns
+        # User-defined .codescopeignore (gitignore syntax)
         rel = str(path.relative_to(config.project_root))
-        if matches_ignore_patterns(rel, config.ignore_patterns):
+        if matches_ignore(rel, config.ignore_spec):
             continue
         files.append(path)
     return sorted(files)
@@ -55,6 +55,60 @@ def _create_store(config: CodeScopeConfig) -> VectorStore:
     """Create a VectorStore with the appropriate embedding function."""
     ef = get_chromadb_embedding_function(config)
     return VectorStore(config.db_dir, embedding_function=ef)
+
+
+def reindex_file(config: CodeScopeConfig, file_path: Path) -> IndexResult:
+    """Re-index a single file.
+
+    Deletes existing chunks for the file, re-chunks, embeds, and upserts.
+    If the file doesn't exist (was deleted), only cleans up old chunks.
+
+    Args:
+        config: Project configuration.
+        file_path: Absolute path to the file to re-index.
+
+    Returns:
+        IndexResult with stats about what happened.
+    """
+    store = _create_store(config)
+    registry = FileHashRegistry(config.db_dir)
+    rel = str(file_path.relative_to(config.project_root))
+
+    # Always remove old chunks first
+    store.delete_by_file(rel)
+
+    # File was deleted — clean up and return
+    if not file_path.exists():
+        registry.remove(rel)
+        registry.save()
+        return IndexResult(chunks_indexed=0, files_changed=0, files_deleted=1, files_unchanged=0)
+
+    # Skip files that don't match our indexing criteria
+    if file_path.suffix not in config.extensions:
+        registry.save()
+        return IndexResult(chunks_indexed=0, files_changed=0, files_deleted=0, files_unchanged=1)
+
+    if matches_ignore(rel, config.ignore_spec):
+        registry.save()
+        return IndexResult(chunks_indexed=0, files_changed=0, files_deleted=0, files_unchanged=1)
+
+    # Chunk and re-embed
+    chunks = chunk_file(file_path, max_lines=config.max_chunk_lines, overlap=config.chunk_overlap)
+    for c in chunks:
+        c.file_path = rel
+
+    if chunks:
+        _embed_and_store(store, chunks, config)
+
+    registry.update(file_path, config.project_root)
+    registry.save()
+
+    return IndexResult(
+        chunks_indexed=len(chunks),
+        files_changed=1,
+        files_deleted=0,
+        files_unchanged=0,
+    )
 
 
 def index_project(config: CodeScopeConfig, *, full: bool = False) -> IndexResult:

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import fnmatch
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from pathspec import PathSpec
 
 # Default directory name for the codescope database inside a project
 DEFAULT_DB_DIR = ".codescope"
@@ -35,6 +35,7 @@ DEFAULT_EXTENSIONS: set[str] = {
     ".py", ".js", ".ts", ".tsx", ".jsx",
     ".go", ".rs", ".java", ".kt", ".c", ".cpp", ".h", ".hpp",
     ".cs", ".rb", ".php", ".swift", ".scala",
+    ".dart", ".gd", ".tscn", ".tres", ".gdshader", ".gdshaderinc",
     ".sql", ".sh", ".bash", ".zsh",
     ".yaml", ".yml", ".toml", ".json",
     ".md", ".mdx", ".txt", ".rst",
@@ -43,107 +44,267 @@ DEFAULT_EXTENSIONS: set[str] = {
 
 # Directories to always ignore (safety net — never indexable)
 IGNORE_DIRS: set[str] = {
+    # Version control
     ".git", ".hg", ".svn",
-    "node_modules", "__pycache__", ".venv", "venv", ".env",
-    ".codescope", ".next", ".nuxt", "dist", "build", "target",
-    ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
-    "vendor", "bower_components",
+    # Dependencies
+    "node_modules", "__pycache__", ".venv", "venv", "env",
+    "vendor", "bower_components", ".pub", ".pub-cache", ".dart_tool",
+    # Build outputs
+    ".codescope", ".next", ".nuxt", "dist", "build", "target", "out", "web-build",
+    # Caches & tooling
+    ".tox", ".nox", ".mypy_cache", ".ruff_cache", ".pytest_cache",
+    ".pytype", ".pyre", "htmlcov", "coverage",
+    ".vite", ".turbo", ".gradle", "Pods",
+    # Framework / engine
+    ".expo", ".godot", ".import", ".mono", ".branches", ".temp",
+    ".flutter", ".supabase",
+    # AI agent orchestration
+    ".applord",
+    # Environment
+    ".env",
 }
 
 # Name of the user-editable ignore file inside .codescope/
 IGNORE_FILE_NAME = ".codescopeignore"
 
 # Default content for a freshly-created .codescopeignore
+# Full .gitignore syntax — LLMs and tools know this format
 DEFAULT_IGNORE_CONTENT = """\
-# codescope ignore file
-# Patterns follow .gitignore-style glob syntax.
-# Lines starting with # are comments. Blank lines are skipped.
+# codescope ignore — same syntax as .gitignore
+# https://git-scm.com/docs/gitignore
 
-# Dependencies
-node_modules/
-.venv/
-venv/
-vendor/
-bower_components/
+# ── Codescope & VCS ───────────────────────────────────────────
+**/.codescope/
+**/.git/
+**/.hg/
+**/.svn/
 
-# Build outputs
-dist/
-build/
-target/
-*.min.js
-*.min.css
-*.map
+# ── Dependencies ──────────────────────────────────────────────
+**/node_modules/
+**/.venv/
+**/venv/
+**/env/
+**/ENV/
+**/vendor/
+**/bower_components/
+**/.pub/
+**/.pub-cache/
+**/.dart_tool/
 
-# Lock files
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
-uv.lock
+# ── Lock files ────────────────────────────────────────────────
+**/package-lock.json
+**/yarn.lock
+**/pnpm-lock.yaml
+**/uv.lock
+**/Gemfile.lock
+**/Podfile.lock
+**/pubspec.lock
+**/composer.lock
+**/Cargo.lock
+**/go.sum
 
-# IDE & OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
+# ── Build outputs ─────────────────────────────────────────────
+**/dist/
+**/dist-ssr/
+**/build/
+**/target/
+**/out/
+**/web-build/
+**/*.min.js
+**/*.min.css
+**/*.map
+**/*.egg-info/
+**/*.egg
+**/*.whl
 
-# Caches
-__pycache__/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.next/
-.nuxt/
-.tox/
+# ── Python ────────────────────────────────────────────────────
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.tox/
+**/.nox/
+**/.coverage
+**/htmlcov/
+**/coverage.xml
+**/.pytype/
+**/.pyre/
+**/.Python
 
-# Media & binary
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.ico
-*.woff
-*.woff2
-*.ttf
-*.eot
-*.mp4
-*.mp3
-*.zip
-*.tar.gz
-*.pdf
+# ── JavaScript / TypeScript ───────────────────────────────────
+**/.next/
+**/.nuxt/
+**/.expo/
+**/.vite/
+**/.turbo/
+**/.metro-health-check*
+**/tsconfig.tsbuildinfo
+**/*.tsbuildinfo
+**/coverage/
+
+# ── Flutter / Dart ────────────────────────────────────────────
+**/.flutter/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/*.g.dart
+**/*.freezed.dart
+**/*.gr.dart
+**/doc/api/
+
+# ── Godot ─────────────────────────────────────────────────────
+**/.godot/
+**/.import/
+**/.mono/
+**/*.translation
+**/mono_crash.*.json
+**/export_presets.cfg
+
+# ── ML / AI models ────────────────────────────────────────────
+**/*.pkl
+**/*.joblib
+**/*.h5
+**/*.onnx
+**/*.pt
+**/*.pth
+**/*.safetensors
+**/*.bin
+**/*.ckpt
+
+# ── Mobile build artifacts ────────────────────────────────────
+**/*.apk
+**/*.aab
+**/*.ipa
+**/*.app
+**/*.jks
+**/*.keystore
+**/*.p8
+**/*.p12
+**/*.mobileprovision
+**/*.hprof
+
+# ── Compiled / native ────────────────────────────────────────
+**/*.so
+**/*.dylib
+**/*.dll
+**/*.exe
+**/*.x86_64
+**/*.class
+**/*.o
+**/*.obj
+
+# ── Environment & secrets ─────────────────────────────────────
+**/.env
+**/.env.local
+**/.env.*.local
+**/secrets/
+**/.secrets
+**/credentials.json
+
+# ── Supabase ──────────────────────────────────────────────────
+**/.supabase/
+**/.branches/
+**/.temp/
+
+# ── Mobile native build ──────────────────────────────────────
+**/.gradle/
+**/Pods/
+
+# ── AI agent orchestration ───────────────────────────────────
+**/.applord/
+
+# ── Docker ────────────────────────────────────────────────────
+**/.dockerignore
+
+# ── Test artifacts & mock data ────────────────────────────────
+**/*.test.ts
+**/*.test.js
+**/*.spec.ts
+**/*.spec.js
+**/*.test.py
+**/*_test.py
+**/tests/
+**/__tests__/
+**/test/
+**/__test__/
+**/past_errors/
+**/mock_data/
+**/mocks/
+**/test_outputs/
+
+# ── IDE & OS ──────────────────────────────────────────────────
+**/.vscode/
+**/.idea/
+**/.fleet/
+**/.eclipse/
+**/.settings/
+**/.project
+**/.classpath
+**/*.iml
+**/.DS_Store
+**/Thumbs.db
+**/Desktop.ini
+**/*.swp
+**/*.swo
+**/*~
+
+# ── Logs ──────────────────────────────────────────────────────
+**/*.log
+**/logs/
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/pnpm-debug.log*
+
+# ── Media & binary ────────────────────────────────────────────
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.gif
+**/*.ico
+**/*.svg
+**/*.webp
+**/*.bmp
+**/*.woff
+**/*.woff2
+**/*.ttf
+**/*.eot
+**/*.otf
+**/*.mp4
+**/*.mp3
+**/*.wav
+**/*.ogg
+**/*.flac
+**/*.zip
+**/*.tar.gz
+**/*.rar
+**/*.7z
+**/*.pdf
+**/*.pem
 """
 
 
-def parse_ignore_file(project_root: Path) -> list[str]:
-    """Read .codescope/.codescopeignore and return a list of cleaned patterns."""
+def load_ignore_spec(project_root: Path) -> PathSpec | None:
+    """Read .codescope/.codescopeignore and return a gitignore-style PathSpec."""
     ignore_path = project_root / DEFAULT_DB_DIR / IGNORE_FILE_NAME
     if not ignore_path.is_file():
-        return []
-    patterns: list[str] = []
-    for line in ignore_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        patterns.append(stripped)
-    return patterns
+        return None
+    lines = ignore_path.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        return None
+    return PathSpec.from_lines("gitignore", lines)
 
 
-def matches_ignore_patterns(rel_path: str, patterns: list[str]) -> bool:
-    """Return True if *rel_path* matches any pattern from .codescopeignore."""
-    if not patterns:
+def matches_ignore(rel_path: str, spec: PathSpec | None) -> bool:
+    """Return True if *rel_path* is ignored by the gitignore spec."""
+    if spec is None:
         return False
-    # Normalise to forward-slash for consistent matching
+    # PathSpec expects forward slashes, relative path
+    # match_file returns True when path matches a pattern (= should be ignored)
     norm = rel_path.replace("\\", "/")
-    parts = norm.split("/")
-
-    for raw in patterns:
-        pat = raw.rstrip("/")
-        # Match against individual path components (directory or file name)
-        if any(fnmatch.fnmatch(part, pat) for part in parts):
-            return True
-        # Match against the full relative path
-        if fnmatch.fnmatch(norm, pat):
-            return True
-    return False
+    return spec.match_file(norm)
 
 
 @dataclass
@@ -160,14 +321,12 @@ class CodeScopeConfig:
     n_results: int = DEFAULT_N_RESULTS
     extensions: set[str] = field(default_factory=lambda: DEFAULT_EXTENSIONS.copy())
     ignore_dirs: set[str] = field(default_factory=lambda: IGNORE_DIRS.copy())
-    ignore_patterns: list[str] = field(default_factory=list)
+    ignore_spec: PathSpec | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.db_dir = self.project_root / DEFAULT_DB_DIR
         self._apply_global_config()
-        # Load .codescopeignore patterns (if file exists)
-        if not self.ignore_patterns:
-            self.ignore_patterns = parse_ignore_file(self.project_root)
+        self.ignore_spec = load_ignore_spec(self.project_root)
 
         # Set default model based on provider if not explicitly set
         if not self.embedding_model:

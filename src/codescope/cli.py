@@ -10,7 +10,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from . import __version__
-from .config import DEFAULT_DB_DIR, DEFAULT_IGNORE_CONTENT, IGNORE_FILE_NAME, CodeScopeConfig
+from .config import DEFAULT_DB_DIR, DEFAULT_IGNORE_CONTENT, IGNORE_FILE_NAME, CodeScopeConfig, load_ignore_spec
 
 console = Console()
 
@@ -36,7 +36,8 @@ def main() -> None:
 @click.argument("path", default=".", type=click.Path(exists=True, path_type=Path))
 @click.option("--model", default=None, help="Embedding model name.")
 @click.option("--full", is_flag=True, help="Force full re-index (ignore cache).")
-def index(path: Path, model: str | None, full: bool) -> None:
+@click.option("--dry-run", is_flag=True, help="Show file counts without indexing (for debugging ignore).")
+def index(path: Path, model: str | None, full: bool, dry_run: bool) -> None:
     """Index a codebase for semantic search.
 
     By default, only changed files are re-indexed (incremental).
@@ -50,6 +51,31 @@ def index(path: Path, model: str | None, full: bool) -> None:
         config.embedding_model = model
     _validate_config(config)
 
+    # Create default .codescopeignore on first index if missing
+    ignore_path = config.db_dir / IGNORE_FILE_NAME
+    if not ignore_path.exists():
+        config.db_dir.mkdir(parents=True, exist_ok=True)
+        ignore_path.write_text(DEFAULT_IGNORE_CONTENT, encoding="utf-8")
+        console.print(f"  [green]Created:[/] {ignore_path}")
+        config.ignore_spec = load_ignore_spec(path)
+
+    if dry_run:
+        from .indexer import collect_files
+
+        files = collect_files(config)
+        console.print(f"[bold]Dry run[/] — {path}")
+        console.print(f"  [cyan]Indexable files:[/] {len(files)}")
+        if files:
+            for f in files[:5]:
+                console.print(f"    [dim]{f.relative_to(path)}[/]")
+            if len(files) > 5:
+                console.print(f"    [dim]... and {len(files) - 5} more[/]")
+        else:
+            console.print(
+                "  [yellow]No files found.[/] Check extensions and .codescope/.codescopeignore"
+            )
+        return
+
     provider_label = f"[dim]({config.embedding_provider})[/]"
     mode = "Full re-index" if full else "Incremental index"
     console.print(f"[bold]{mode}[/] {path} {provider_label}")
@@ -62,6 +88,41 @@ def index(path: Path, model: str | None, full: bool) -> None:
             f"{result.files_deleted} deleted, "
             f"{result.files_unchanged} unchanged[/]"
         )
+
+
+@main.command("reindex-file")
+@click.argument("file", type=click.Path(path_type=Path))
+@click.option("--project", default=".", type=click.Path(exists=True, path_type=Path),
+              help="Project root (default: current directory).")
+def reindex_file_cmd(file: Path, project: Path) -> None:
+    """Re-index a single file.
+
+    Deletes old chunks for the file, re-chunks, embeds, and upserts.
+    If the file was deleted, cleans up its chunks from the index.
+    Designed to be called from editor hooks (e.g. Claude Code PostToolUse).
+    """
+    from .indexer import reindex_file
+
+    project = project.resolve()
+    file = file.resolve()
+    config = CodeScopeConfig(project_root=project)
+    _validate_config(config)
+
+    if not config.db_dir.exists():
+        console.print("[yellow]Not indexed.[/] Run `codescope index` first.")
+        raise SystemExit(1)
+
+    result = reindex_file(config, file)
+
+    if result.files_deleted:
+        console.print(f"[green]Cleaned up[/] {file.relative_to(project)}")
+    elif result.chunks_indexed:
+        console.print(
+            f"[green]Re-indexed[/] {file.relative_to(project)} "
+            f"({result.chunks_indexed} chunks)"
+        )
+    else:
+        console.print(f"[dim]Skipped[/] {file.relative_to(project)}")
 
 
 @main.command()
@@ -204,9 +265,6 @@ If grep doesn't find what you need in 1-2 tries, switch to `search_codebase`. If
 ## MCP Tools
 
 - `search_codebase(query)` — Semantic search. Returns the most relevant code chunks with file paths and line numbers.
-- `index_codebase()` — Re-index after major changes (incremental by default).
-- `begin_session()` — Call at the START of a coding session to track changes.
-- `end_session()` — Call when DONE to auto re-index changed files.
 
 ## MCP Resources
 
@@ -215,17 +273,39 @@ If grep doesn't find what you need in 1-2 tries, switch to `search_codebase`. If
 - `codescope://files` — Flat list of all indexed files.
 - `codescope://config` — Current codescope configuration.
 
-## Workflow
+## Index Updates
 
-1. Start with `begin_session()` at the beginning of work.
-2. Find code: use grep for exact names, `search_codebase` for concepts. Let the search type match the query type.
-3. Only read files that search results point to.
-4. When finished, call `end_session()` to update the index.
+The search index is updated automatically via a PostToolUse hook after each Edit/Write.
+No manual indexing calls needed — just search and code.
 """
 
 _MCP_JSON_ENTRY = {
     "command": "codescope-mcp",
     "args": [],
+}
+
+_HOOK_REINDEX_COMMAND = (
+    "codescope reindex-file"
+    " --project \"$CLAUDE_PROJECT_DIR\""
+    " \"$(cat | python3 -c \"import sys,json; print(json.load(sys.stdin)['tool_input']['file_path'])\")\""
+)
+
+_HOOKS_SETTINGS: dict = {
+    "hooks": {
+        "PostToolUse": [
+            {
+                "matcher": "Edit|Write",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": _HOOK_REINDEX_COMMAND,
+                        "async": True,
+                        "timeout": 30,
+                    }
+                ],
+            }
+        ]
+    }
 }
 
 _CODEX_MCP_TOML = """\
@@ -294,6 +374,39 @@ def _ensure_codex_mcp_toml(file_path: Path) -> None:
         console.print(f"  [green]Created:[/] {file_path}")
 
 
+def _ensure_hooks_settings(file_path: Path) -> None:
+    """Create or update a Claude Code settings.json with codescope PostToolUse hooks."""
+    import json
+
+    existed = file_path.exists()
+    data: dict = {}
+
+    if existed:
+        try:
+            data = json.loads(file_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            data = {}
+
+    hooks = data.get("hooks", {})
+    post_tool_use = hooks.get("PostToolUse", [])
+
+    # Check if a codescope reindex hook already exists
+    for group in post_tool_use:
+        for h in group.get("hooks", []):
+            if "codescope reindex-file" in h.get("command", ""):
+                console.print(f"  [dim]Already has codescope hook:[/] {file_path}")
+                return
+
+    post_tool_use.append(_HOOKS_SETTINGS["hooks"]["PostToolUse"][0])
+    hooks["PostToolUse"] = post_tool_use
+    data["hooks"] = hooks
+
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    action = "Updated" if existed else "Created"
+    console.print(f"  [green]{action}:[/] {file_path} (PostToolUse hook)")
+
+
 def _ensure_codescopeignore(project: Path) -> None:
     """Create .codescope/.codescopeignore with sensible defaults if missing."""
     codescope_dir = project / DEFAULT_DB_DIR
@@ -356,6 +469,13 @@ def init_claude(path: Path, user: bool) -> None:
         mcp_file = project / ".mcp.json"
         _ensure_mcp_json(mcp_file)
         console.print("  [dim]MCP scope: project[/]")
+
+    # 4. PostToolUse hook for automatic re-indexing
+    if user:
+        hooks_file = Path.home() / ".claude" / "settings.json"
+    else:
+        hooks_file = project / ".claude" / "settings.json"
+    _ensure_hooks_settings(hooks_file)
 
     console.print(
         "\n[green]Done![/] Next steps:\n"

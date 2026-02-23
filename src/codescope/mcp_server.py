@@ -8,7 +8,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from .config import CodeScopeConfig
-from .indexer import collect_files, index_project
+from .indexer import collect_files
 from .search import search as do_search
 
 
@@ -24,7 +24,7 @@ def main() -> None:
 
     mcp = FastMCP(
         "codescope",
-        instructions="Codebase indexer & semantic search for AI coding agents",
+        instructions="Semantic code search for AI coding agents",
     )
 
     # -------------------------------------------------------------------------
@@ -66,99 +66,13 @@ def main() -> None:
             )
         return json.dumps(output, indent=2)
 
-    @mcp.tool()
-    def index_codebase(project_path: str = ".", full: bool = False) -> str:
-        """Index or re-index a codebase for semantic search.
-
-        Incremental by default — only changed files are re-embedded.
-        Set full=True to rebuild the entire index from scratch.
-
-        Args:
-            project_path: Path to the project root (default: current directory).
-            full: If True, force a full re-index ignoring cache.
-        """
-        path = Path(project_path).resolve()
-        config = CodeScopeConfig(project_root=path)
-
-        if err := _validate_openai(config):
-            return err
-
-        result = index_project(config, full=full)
-        return json.dumps(
-            {
-                "chunks_indexed": result.chunks_indexed,
-                "files_changed": result.files_changed,
-                "files_deleted": result.files_deleted,
-                "files_unchanged": result.files_unchanged,
-            },
-            indent=2,
-        )
-
-    @mcp.tool()
-    def begin_session(project_path: str = ".") -> str:
-        """Start tracking file changes for a coding session.
-
-        Call this BEFORE making changes to the codebase. Takes a snapshot
-        of all file hashes. When done, call end_session to detect changes
-        and automatically re-index only modified files.
-
-        Args:
-            project_path: Path to the project root (default: current directory).
-        """
-        from .session import take_snapshot
-
-        path = Path(project_path).resolve()
-        config = CodeScopeConfig(project_root=path)
-
-        count = take_snapshot(config)
-        return json.dumps(
-            {"status": "session_started", "files_tracked": count},
-            indent=2,
-        )
-
-    @mcp.tool()
-    def end_session(project_path: str = ".") -> str:
-        """End a coding session, detect changes, and re-index modified files.
-
-        Call this AFTER making changes. Compares current file state against
-        the snapshot taken by begin_session, then incrementally re-indexes
-        only the files that changed.
-
-        Args:
-            project_path: Path to the project root (default: current directory).
-        """
-        from .session import clear_snapshot, compute_diff
-
-        path = Path(project_path).resolve()
-        config = CodeScopeConfig(project_root=path)
-
-        if err := _validate_openai(config):
-            return err
-
-        diff = compute_diff(config)
-        if diff is None:
-            return "Error: No active session. Call begin_session first."
-
-        total_changes = len(diff.modified) + len(diff.created) + len(diff.deleted)
-
-        # Re-index if there were changes
-        chunks_reindexed = 0
-        if total_changes > 0:
-            result = index_project(config)
-            chunks_reindexed = result.chunks_indexed
-
-        clear_snapshot(config)
-
-        return json.dumps(
-            {
-                "status": "session_ended",
-                "files_modified": diff.modified,
-                "files_created": diff.created,
-                "files_deleted": diff.deleted,
-                "chunks_reindexed": chunks_reindexed,
-            },
-            indent=2,
-        )
+    # --- Legacy tools (disabled) ---------------------------------------------------
+    # index_codebase, begin_session, and end_session are replaced by the
+    # `codescope reindex-file` CLI command triggered via Claude Code PostToolUse
+    # hooks. This keeps the search index up-to-date automatically without
+    # consuming tool slots or agent context.
+    # See: codescope init claude --help
+    # --------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
     # Resources — application-controlled, read-only context data
@@ -302,16 +216,15 @@ def main() -> None:
     def session_workflow() -> str:
         """Recommended workflow for coding sessions with codescope.
 
-        Guides the agent through the begin_session / end_session pattern
-        to keep the search index up to date automatically.
+        The search index is kept up to date automatically via editor hooks
+        (PostToolUse on Edit/Write). No manual session management needed.
         """
         return (
             "Follow this workflow for this coding session:\n\n"
-            "1. Call begin_session to start tracking file changes.\n"
-            "2. Use search_codebase to find relevant code before reading files.\n"
-            "3. Make your code changes as needed.\n"
-            "4. When done, call end_session to automatically re-index changed files.\n\n"
-            "This keeps the semantic search index up to date with your changes."
+            "1. Use search_codebase to find relevant code before reading files.\n"
+            "2. Make your code changes as needed.\n"
+            "3. The search index is updated automatically after each file edit.\n\n"
+            "No need to call any indexing tools — hooks handle it for you."
         )
 
     mcp.run()
