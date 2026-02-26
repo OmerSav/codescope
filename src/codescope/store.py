@@ -20,6 +20,9 @@ class VectorStore:
 
     def __init__(self, db_path: Path, *, embedding_function: Any | None = None) -> None:
         db_path.mkdir(parents=True, exist_ok=True)
+        # Clear cached client state so external writes (e.g. reindex-file hook)
+        # are visible to long-running processes like the MCP server.
+        chromadb.api.client.SharedSystemClient.clear_system_cache()
         self._client = chromadb.PersistentClient(path=str(db_path))
 
         kwargs: dict[str, Any] = {
